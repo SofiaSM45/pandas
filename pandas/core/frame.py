@@ -9835,6 +9835,81 @@ class DataFrame(NDFrame, OpsMixin):
 
         return result.__finalize__(self, method="explode")
 
+    def explode_wide(self,
+        column: IndexLabel, 
+        ignore_index: bool = False) -> Dataframe:
+        '''
+        Expand list like elements in a column into multiple columns, replicating index values.
+
+        Parameters
+        ----------
+        column: IndexLabel
+            Columns to be exploded
+        ignore_index : bool, default False
+            If True, the resulting index will be labeled 0, 1, …, n - 1.
+
+        Returns
+        -------
+        Dataframe 
+            Exploded lists to columns of the subset rows;
+            index will be duplicated for these columns.
+
+        Raises
+        ------
+        ValueError :
+            * If columns of the frame are not unique.
+            * If specified columns to explode is empty list.
+
+        Examples
+        --------
+        >>> df = pd.DataFrame(
+        ...     {
+        ...         "A": [[0, 1, 2], "foo", [], [3, 4]],
+        ...         "B": 1,
+        ...         "C": [["a", "b", "c"], np.nan, [], ["d", "e"]],
+        ...     }
+        ... )
+        >>> df
+            0          1    2   3
+        A   [0, 1, 2]  foo  NaN [3, 4]
+        B   1          1    1   1         
+        C   [a, b, c]  NaN  NaN [d, e]
+
+        >>> df.explode_wide("A")
+            0           0           0           1       2       3       3
+        A   0           1           2           foo     NaN     3       4
+        B   1           1           1           1       1       1       1
+        C   [a, b, c]   [a, b, c]   [a, b, c]   NaN     NaN     [d, e]   [d, e]
+
+        Single-column explode.
+
+        >>> df.explode_wide("ABC")
+            0    0   0   1   2   3   3
+        A   0    1   2   foo NaN 3   4
+        B   1    1   1   1   1   1   1
+        C   a    b   c   NaN NaN d   e
+
+        Multi-column explode.
+        '''
+        if not self.columns.is_unique:
+            duplicate_cols = self.columns[self.columns.duplicated()].tolist()
+            raise ValueError(
+                f"DataFrame columns must be unique. Duplicate columns: {duplicate_cols}"
+            ) 
+        columns: list[Hashable]
+        if is_scalar(column) or isinstance(column, tuple):
+            columns = [column]
+        elif isinstance(column, list) and all(
+            is_scalar(c) or isinstance(c, tuple) for c in column
+        ):
+            if not column:
+                raise ValueError("column must be nonempty")
+            if len(column) > len(set(column)):
+                raise ValueError("column must be unique")
+            columns = column
+        else:
+            raise ValueError("column must be a scalar, tuple, or list thereof")
+
     def unstack(
         self, level: IndexLabel = -1, fill_value=None, sort: bool = True
     ) -> DataFrame | Series:
