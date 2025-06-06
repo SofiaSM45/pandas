@@ -9919,6 +9919,171 @@ class DataFrame(NDFrame, OpsMixin):
 
         return result.__finalize__(self, method="explode")
 
+    def explode_wide(
+        self,
+        column: IndexLabel,
+        ignore_index: bool = False,
+    ) -> DataFrame:
+        """
+        Expand list like elements in a column into multiple columns, replicating
+        index values.
+
+        Parameters
+        ----------
+        column: IndexLabel
+            Columns to be exploded
+        ignore_index : bool, default False
+            If True, the resulting index will be labeled 0, 1, …, n - 1.
+
+        Returns
+        -------
+        Dataframe
+            Exploded lists to columns of the subset rows;
+            index will be duplicated for these columns.
+
+        Raises
+        ------
+        ValueError :
+            * If columns of the frame are not unique.
+            * If specified columns to explode is empty list.
+            * If specified columns are not unique.
+            * If lengths of each column are unequal in each row.
+
+        Examples
+        --------
+        >>> df = pd.DataFrame(
+        ...     {
+        ...         "A": [[0, 1, 2], "foo", [], [3, 4]],
+        ...         "B": 1,
+        ...         "C": [["a", "b", "c"], np.nan, [], ["d", "e"]],
+        ...     }
+        ... )
+        >>> df
+            0          1    2   3
+        A   [0, 1, 2]  foo  [] [3, 4]
+        B   1          1    1   1
+        C   [a, b, c]  NaN  [] [d, e]
+
+        >>> df.explode_wide("A")
+            0           0           0           1       2       3       3
+        A   0           1           2           foo     NaN     3       4
+        B   1           1           1           1       1       1       1
+        C   [a, b, c]   [a, b, c]   [a, b, c]   NaN     []     [d, e]   [d, e]
+
+        Single-column explode.
+
+        >>> df.explode_wide("ABC")
+            0    0   0   1   2   3   3
+        A   0    1   2   foo NaN 3   4
+        B   1    1   1   1   1   1   1
+        C   a    b   c   NaN NaN d   e
+
+        Multi-column explode.
+        """
+
+        # Validate that the DataFrame has unique column names
+        if not self.columns.is_unique:
+            duplicate_cols = self.columns[self.columns.duplicated()].tolist()
+            raise ValueError(
+                f"DataFrame columns must be unique. Duplicate columns: {duplicate_cols}"
+            )
+
+        # Convert column input to a list with those column names
+        columns: list[Hashable]
+        if is_scalar(column) or isinstance(column, tuple):
+            # Case 1: Single column
+            columns = [column]
+        elif isinstance(column, list) and all(
+            is_scalar(c) or isinstance(c, tuple) for c in column
+        ):
+            # Case 2: List of columns
+            if not column:
+                raise ValueError("column must be nonempty")
+            if len(column) > len(set(column)):
+                raise ValueError("column must be unique")
+            columns = column
+        else:
+            # Invalid format
+            raise ValueError("column must be a scalar, tuple, or list thereof")
+
+        result_rows = {col: [] for col in self.columns}
+        expanded_columns = []
+
+        for i in range(len(self)):
+            # Track how many times each row will expand
+            row_lengths = []
+            # Exploded values for each column
+            row_values = {}
+
+            # For each column to explode
+            for col in columns:
+                val = self.iloc[i][col]
+
+                # Convert sets to sorted lists to ensure consistent order
+                if isinstance(val, set):
+                    val = sorted(val)
+                if isinstance(val, list) or isinstance(val, tuple):
+                    if val:
+                        # Non empty list/tuple
+                        row_lengths.append(len(val))
+                        row_values[col] = val
+                    else:
+                        # Empty list/tuple: turn into NaN
+                        row_lengths.append(1)
+                        row_values[col] = [np.nan]
+                else:
+                    # Scalar: put in a list
+                    row_lengths.append(1)
+                    row_values[col] = [val]
+
+            # Number of columns this row will expand into
+            max_len = max(row_lengths)
+
+            # Replicate values in shorter lists so all columns align in length
+            for col in columns:
+                val_list = row_values[col]
+                if len(val_list) == 1 and max_len > 1:
+                    val_list = val_list * max_len
+                elif len(val_list) != max_len:
+                    raise ValueError(
+                        f"Row {i} has unequal lengths in exploded columns:{row_lengths}"
+                    )
+                row_values[col] = val_list
+
+            # Generate repeated index labels for each exploded value
+            expanded_columns.extend([self.index[i]] * max_len)
+
+            # Assemble final exploded data
+            for col in self.columns:
+                val = self.iloc[i][col]
+                if col in columns:
+                    # Case 1: Column selected for explosion: use list of exploded values
+                    result_rows[col].extend(row_values[col])
+                else:
+                    # Case 2: Column not selected: repeat value to match exploded length
+                    result_rows[col].extend([val] * max_len)
+
+        # Build the result Dataframe
+        result = DataFrame(result_rows)
+        # Transpose so rows become columns and vice versa
+        result = result.T
+
+        # Set the final column labels
+        # (Support Index and MultiIndex)
+        if isinstance(self.index, MultiIndex):
+            result.columns = MultiIndex.from_tuples(
+                expanded_columns, names=self.index.names
+            )
+        else:
+            result.columns = Index(expanded_columns, name=self.index.name)
+
+        # Replace column labels with integer range if required by the user
+        if ignore_index:
+            result.columns = range(result.shape[1])
+
+        # Finalize Dataframe to retain metadata
+        return result.__finalize__(self, method="explode_wide")
+
     def unstack(
         self, level: IndexLabel = -1, fill_value=None, sort: bool = True
     ) -> DataFrame | Series:
